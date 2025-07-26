@@ -14,12 +14,18 @@ from pynetdicom import AE, evt
 from pynetdicom._globals import ALL_TRANSFER_SYNTAXES
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
+from pydicom.uid import UID
 from pydicom.valuerep import DA, TM
 
 from pynetdicom.sop_class import (
 	Verification,
 	ModalityWorklistInformationFind,
+	# ModalityPerformedProcedureStepSOPClass,
+	# ModalityPerformedProcedureStepNotificationSOPClass,
 )
+
+MPPS_SOP_CLASS = UID("1.2.840.10008.3.1.2.3.3")
+MPPS_NOTIFICATION_SOP_CLASS = UID("1.2.840.10008.3.1.2.5.3")
 
 CONFIG_PATH = "./marley_ris_bridge/config.json"
 ae = "MARLEY-RIS"
@@ -99,6 +105,20 @@ def handle_find(event):
 
 		yield (0xFF00, identifier)
 
+def handle_n_create(event):
+	ds = event.attribute_list
+	logger.info(f"MPPS N-CREATE triggered")
+	logger.debug(f"[N-CREATE] Incoming Dataset: {ds}")
+	send_n_create(ds) # TODO: handle failure
+	return 0x0000, None
+
+def handle_n_set(event):
+	ds = event.modification_list
+	logger.info(f"MPPS N-SET triggered")
+	logger.debug(f"[N-SET] Incoming Dataset: {ds}")
+	send_n_set(ds)
+	return 0x0000, None
+
 def handle_assoc_accepted(event):
 	ae_title = event.assoc.requestor.ae_title
 	active_callers.add(ae_title)
@@ -108,6 +128,38 @@ def handle_assoc_released(event):
 	ae_title = event.assoc.requestor.ae_title
 	active_callers.discard(ae_title)
 	logger.debug(f"[RELEASE] {ae_title} disconnected. Active: {len(active_callers)}")
+
+def send_n_set(ds):
+	try:
+		config = get_config()
+		url = f"{config['host_name'].rstrip('/')}/api/method/healthcare.healthcare.api.mpps.handle_n_set"
+		payload = build_mpps_payload(ds)
+		headers = {
+			"Authorization": f"token {config['api_key']}:{config['api_secret']}",
+			"Content-Type": "application/json",
+		}
+		logger.debug(f"[N-SET] Sending to {url}: {payload}")
+		r = requests.post(url, headers=headers, data=json.dumps(payload))
+		logger.debug(f"[N-SET] Response: {r.status_code} - {r.text}")
+	except Exception as e:
+		logger.debug(f"[N-SET] Failed: {e}")
+		raise Exception(f"Completing {getattr(ds, 'AccessionNumber', '')} failed with {repr(e)}")
+
+def send_n_create(ds):
+	try:
+		config = get_config()
+		url = f"{config['host_name'].rstrip('/')}/api/method/healthcare.healthcare.api.mpps.handle_n_create"
+		payload = build_mpps_payload(ds)
+		headers = {
+			"Authorization": f"token {config['api_key']}:{config['api_secret']}",
+			"Content-Type": "application/json",
+		}
+		logger.debug(f"[N-CREATE] Sending to {url}: {payload}")
+		r = requests.post(url, headers=headers, data=json.dumps(payload))
+		logger.debug(f"[N-CREATE] Response: {r.status_code} - {r.text}")
+	except Exception as e:
+		logger.debug(f"[N-CREATE] Failed: {e}")
+		raise Exception(f"Claim for {getattr(ds, 'AccessionNumber', '')} failed with {repr(e)}")
 
 def send_ups_rs_query(filters):
 	fields = list(appointment_worklist_map.keys())
@@ -127,6 +179,70 @@ def send_ups_rs_query(filters):
 	except Exception as e:
 		logger.debug(f"[C-FIND] UPS-RS failed: {e}")
 		return []
+
+def build_mpps_payload(ds):
+
+	def safe_get_from_ds(obj, attr, default=""):
+		return getattr(obj, attr, default) or default
+
+	study_uid = safe_get_from_ds(ds, "StudyInstanceUID")
+	accession_number = safe_get_from_ds(ds, "AccessionNumber")
+	status = safe_get_from_ds(ds, "PerformedProcedureStepStatus").lower()
+	patient_id = safe_get_from_ds(ds, "PatientID")
+	station_ae = safe_get_from_ds(ds, "PerformedStationAETitle")
+	performer = (
+		safe_get_from_ds(ds, "PerformedProcedureStepPerformerName") or
+		safe_get_from_ds(ds, "PerformingPhysicianName") or
+		safe_get_from_ds(ds, "ScheduledPerformingPhysicianName")
+	)
+
+	# Combine date + time (both optional)
+	start_time = safe_get_from_ds(ds, "PerformedProcedureStepStartDate") + safe_get_from_ds(ds, "PerformedProcedureStepStartTime")
+	end_time = safe_get_from_ds(ds, "PerformedProcedureStepEndDate") + safe_get_from_ds(ds, "PerformedProcedureStepEndTime")
+
+	series = []
+	instances = []
+
+	if hasattr(ds, "PerformedSeriesSequence"):
+		logger.debug(f"Build MPPS payload: has PerformedSeriesSequence")
+		for s in ds.PerformedSeriesSequence:
+			series_uid = safe_get_from_ds(s, "SeriesInstanceUID")
+			series_description = safe_get_from_ds(s, "SeriesDescription")
+			modality = safe_get_from_ds(s, "Modality")
+
+			series.append({
+				"series_uid": series_uid,
+				"study_uid": study_uid,
+				"description": series_description,
+				"modality": modality,
+			})
+
+			if hasattr(s, "ReferencedImageSequence"):
+				logger.debug(f"Build MPPS payload: has ReferencedImageSequence")
+				for i in s.ReferencedImageSequence:
+					sop_uid = safe_get_from_ds(i, "ReferencedSOPInstanceUID")
+					sop_class = safe_get_from_ds(i, "ReferencedSOPClassUID")
+					instances.append({
+						"sop_instance_uid": sop_uid,
+						"sop_class_uid": sop_class,
+						"series_uid": series_uid,
+						"study_uid": study_uid,
+					})
+	result = {
+		"accession_number": accession_number,
+		"study_instance_uid": study_uid,
+		"patient": patient_id,
+		"start_time": start_time,
+		"end_time": end_time,
+		"status": status,
+		"series": series,
+		"instances": instances,
+		"performed_station_ae": station_ae,
+		"performer_name": performer,
+		"raw_ds": ds.to_json_dict(), # original dataset
+	}
+	logger.debug(f"Build MPPS payload: Result:\n{result}")
+	return result
 
 def build_filters(ds):
 	filters = {
@@ -153,17 +269,23 @@ def get_config():
 	return config
 
 def start_scp(args):
-	""" Start SCP for required contexts, C-ECHO, C-FIND """
+	""" Start SCP for required contexts, C-ECHO, C-FIND, MPPS N-CREATE and MPPS N-SET """
 	logger.info("Starting up Marley RIS Bridge...")
 	global ae
 	ae = AE(ae_title=args.title)
 	ae.maximum_associations = 5
 	ae.add_supported_context(Verification, ALL_TRANSFER_SYNTAXES)
 	ae.add_supported_context(ModalityWorklistInformationFind, ALL_TRANSFER_SYNTAXES)
+	# ae.add_supported_context(ModalityPerformedProcedureStepSOPClass, ALL_TRANSFER_SYNTAXES) # FIXME
+	# ae.add_supported_context(ModalityPerformedProcedureStepNotificationSOPClass, ALL_TRANSFER_SYNTAXES) #FIXME
+	ae.add_supported_context(MPPS_SOP_CLASS, ALL_TRANSFER_SYNTAXES)
+	ae.add_supported_context(MPPS_NOTIFICATION_SOP_CLASS, ALL_TRANSFER_SYNTAXES)
 
 	handlers = [
 		(evt.EVT_C_ECHO, handle_echo),
 		(evt.EVT_C_FIND, handle_find),
+		(evt.EVT_N_CREATE, handle_n_create),
+		(evt.EVT_N_SET, handle_n_set),
 		(evt.EVT_ACCEPTED, handle_assoc_accepted),
 		(evt.EVT_RELEASED, handle_assoc_released),
 	]
