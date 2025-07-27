@@ -2,7 +2,7 @@
 [project]
 name = "marley_ris_bridge"
 version = "1.0.0"
-description = "DICOM MWL SCP"
+description = "DICOM MWL SCP with MPPS support"
 authors = [
     {name = "earthians"}
 ]
