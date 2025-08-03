@@ -1,9 +1,0 @@
-{
-	"host_name": "http://v16:8000/",
-	"api_key": "587276fd1080884",
-	"api_secret": "cbd02d8353fcb0f",
-	"log_level": "INFO",
-	"care_host_name": "https://care.earthianslive.com/",
-	"care_api_key": "7fe2bddcca9b7cb",
-	"care_api_secret": "8c70b581c1a3db0"
-}
