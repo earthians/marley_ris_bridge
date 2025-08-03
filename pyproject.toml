@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "marley-ris-bridge"
+version = "0.1.0"
+description = "DICOM DIMSE ↔ DICOMWeb bridge for Marley Healthcare"
+authors = ["Earthians <devs@earthianslive.com>"]
+readme = "README.md"
+packages = [
+  { include = "handlers" },
+  { include = "network" },
+  { include = "utils" },
+  { include = "config.py" },
+  { include = "app.py" }
+]
+dependencies = [
+    "pynetdicom",
+    "logzero",
+    "requests",
+]
+[tool.poetry.dependencies]
+python = ">=3.10,<3.12"
+pydicom = "*"
+pynetdicom = "*"
+requests = "*"
+logzero = "*"
+
+[tool.poetry.scripts]
+marley-ris-bridge = "app:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
