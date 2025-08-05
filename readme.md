@@ -43,8 +43,7 @@ python3 -m app MARLEY-SCP --host 0.0.0.0 -p 104
 ---
 
 ## Auth
-- DICOMWeb requests use Frappe token based auth (config.py)
-- Legacy `/api/method` APIs use `Authorization: token <api_key>:<api_secret>`
+- DICOMWeb APIs use `Authorization: token <api_key>:<api_secret>` (configurable via config.py)
 
 ---
 
